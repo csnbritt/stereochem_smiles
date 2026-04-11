@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crisp_smiles"
+version = "0.1.0"
+authors = [
+    {name = "De Novo Chem Team", email = "carson.britt@denovochem.com"}
+]
+description = "CRISP SMILES is a Python library for converting SMILES strings to and from a new syntax that preserves stereochemistry information."
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Software Development :: Libraries",
+]
+dynamic = ["dependencies"]
+
+[project.urls]
+Homepage = "https://github.com/denovochem/crisp_smiles"
+
+[tool.setuptools]
+zip-safe = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.mypy]
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "pytest>=9.0.2",
+    "ruff>=0.15.6",
+]
