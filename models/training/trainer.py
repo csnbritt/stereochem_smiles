@@ -48,7 +48,7 @@ def process_single_smiles(
     smiles,
     smiles_preprocessing: SmilesPreprocessing,
     max_atoms: int = 150,
-) -> Optional[Tuple[str, str]]:
+) -> Optional[str]:
     """
     Process a single molecule into an (input, output) SMILES pair.
 
@@ -64,16 +64,21 @@ def process_single_smiles(
     if mol is None or mol.GetNumAtoms() > max_atoms:
         return None
 
-    if smiles_preprocessing is not None:
-        input_smiles_syntax = smiles_preprocessing["input_smiles_syntax"]
-        input_smiles_type = smiles_preprocessing["input_smiles_type"]
-        crisp_input_deferred = smiles_preprocessing["crisp_input_deferred"]
+    if not smiles_preprocessing:
+        return None
+
+    input_smiles_syntax = smiles_preprocessing["input_smiles_syntax"]
+    input_smiles_type = smiles_preprocessing["input_smiles_type"]
+    crisp_input_deferred = smiles_preprocessing["crisp_input_deferred"]
 
     if input_smiles_syntax == "smiles":
         if input_smiles_type == "canonical":
             inp = Chem.MolToSmiles(mol, canonical=True)
         elif input_smiles_type == "random":
-            inp = randomize_smiles(mol)
+            randomized_smiles = randomize_smiles(mol)
+            if randomized_smiles is None:
+                return None
+            inp = randomized_smiles
         else:
             raise ValueError(f"Invalid input_smiles_type: {input_smiles_type}")
     elif input_smiles_syntax == "crisp_smiles":
@@ -88,8 +93,11 @@ def process_single_smiles(
 
 
 def process_translation(
-    smiles, smiles_preprocessing_inp, smiles_preprocessing_out, max_atoms=150
-):
+    smiles: str,
+    smiles_preprocessing_inp: Optional[SmilesPreprocessing],
+    smiles_preprocessing_out: Optional[SmilesPreprocessing],
+    max_atoms: int = 150,
+) -> Optional[Tuple[str, str]]:
     """
     Process a single SMILES string into an (input, output) pair.
 
@@ -102,17 +110,24 @@ def process_translation(
     Returns:
         Optional[Tuple[str, str]]: (input_smiles, output_smiles) or None if skipped.
     """
+    if not smiles_preprocessing_inp:
+        return None
+    if not smiles_preprocessing_out:
+        return None
+
     inp = process_single_smiles(smiles, smiles_preprocessing_inp, max_atoms)
     out = process_single_smiles(smiles, smiles_preprocessing_out, max_atoms)
+    if inp is None or out is None:
+        return None
     return (inp, out)
 
 
 def process_reaction(
-    rxn_smiles,
-    smiles_preprocessing_reactants,
-    smiles_preprocessing_products,
-    max_atoms=150,
-):
+    rxn_smiles: str,
+    smiles_preprocessing_reactants: Optional[SmilesPreprocessing],
+    smiles_preprocessing_products: Optional[SmilesPreprocessing],
+    max_atoms: int = 150,
+) -> Optional[Tuple[str, str]]:
     """
     Process a reaction SMILES string into a (reactants, products) pair.
 
@@ -125,6 +140,10 @@ def process_reaction(
         Optional[Tuple[str, str]]: (reactant_smiles, product_smiles) or None if invalid.
     """
     if ">>" not in rxn_smiles:
+        return None
+    if not smiles_preprocessing_reactants:
+        return None
+    if not smiles_preprocessing_products:
         return None
 
     parts = rxn_smiles.split(">>")
@@ -141,7 +160,7 @@ def process_reaction(
             )
             if processed is None:
                 return None
-            pieces.append(processed[0])
+            pieces.append(processed)
         if any(p is None for p in pieces):
             return None
         return ".".join(pieces)
@@ -280,7 +299,12 @@ class DynamicSmilesDataset(Dataset):
             print("\nRegenerating training data with new SMILES augmentation...")
             old_size = len(self.data)
             self.data = generate_training_data(
-                self.data_source, mode=self.mode, max_atoms=self.max_atoms, verbose=True
+                self.data_source,
+                mode=self.mode,
+                input_smiles_preprocessing=self.input_smiles_preprocessing,
+                output_smiles_preprocessing=self.output_smiles_preprocessing,
+                max_atoms=self.max_atoms,
+                verbose=True,
             )
             if not self.data:
                 raise ValueError(f"Data regeneration failed! Previous size: {old_size}")
@@ -476,23 +500,23 @@ class CustomSmallConfig:
     """Configuration for custom tiny transformer"""
 
     vocab_size: int | None = None
-    hidden_size: int = 128
+    hidden_size: int = 256
     num_hidden_layers: int = 4
     num_attention_heads: int = 8
-    intermediate_size: int = 512
+    intermediate_size: int = 2048
     hidden_dropout_prob: float = 0.1
     attention_probs_dropout_prob: float = 0.1
-    max_position_embeddings: int = 256
-    max_input_length: int = 128
-    max_output_length: int = 128
+    max_position_embeddings: int = 512
+    max_input_length: int = 256
+    max_output_length: int = 256
     batch_size: int = 64
     learning_rate: float = 1e-3
-    num_epochs: int = 100
-    warmup_steps: int = 2000
+    num_epochs: int = 20
+    warmup_steps: int = 8000
     weight_decay: float = 0.01
     gradient_accumulation_steps: int = 1
     adam_beta1: float = 0.9
-    adam_beta2: float = 0.98
+    adam_beta2: float = 0.998
     adam_epsilon: float = 1e-9
     max_grad_norm: float = 1.0
     lr_scheduler_type: str = "cosine"
@@ -583,6 +607,8 @@ class SmilesTrainer:
         max_atoms: int = 150,
         regenerate_per_epoch: bool = True,
         analysis_dir: str | None = None,
+        input_smiles_preprocessing: SmilesPreprocessing | None = None,
+        output_smiles_preprocessing: SmilesPreprocessing | None = None,
     ):
         """
         Initialize the trainer.
@@ -590,15 +616,17 @@ class SmilesTrainer:
         Args:
             config (CustomSmallConfig): Model and training configuration.
             tokenizer (PreTrainedTokenizer): Tokenizer instance.
-            train_data (List): Training data. For MODE_RANDOM_TO_CANONICAL and
-                MODE_RANDOM_TO_RANDOM, a list of RDKit Mol objects. For MODE_REACTION,
-                a list of reaction SMILES strings.
-            mode (str): Preprocessing mode.
+            train_data (List): Training data. SMILES strings for translation mode,
+                reaction SMILES strings for reaction mode.
+            mode (str): Preprocessing mode ("translation" or "reaction").
             val_data (Optional[List]): Validation data. Either raw data (same format as
                 train_data, will be processed once) or pre-processed tuples.
             test_data (Optional[List[Tuple[str, str]]]): Pre-processed test tuples.
             max_atoms (int): Maximum atoms per molecule.
             regenerate_per_epoch (bool): Re-randomize SMILES each epoch.
+            analysis_dir (str | None): Directory for analysis outputs.
+            input_smiles_preprocessing (SmilesPreprocessing | None): Input preprocessing config.
+            output_smiles_preprocessing (SmilesPreprocessing | None): Output preprocessing config.
         """
         self.config = config
         self.tokenizer = tokenizer
@@ -616,6 +644,9 @@ class SmilesTrainer:
         )
         os.makedirs(self.analysis_dir, exist_ok=True)
 
+        self.input_smiles_preprocessing = input_smiles_preprocessing
+        self.output_smiles_preprocessing = output_smiles_preprocessing
+
         # Create dynamic training dataset that regenerates each epoch
         print("=" * 60)
         print(f"INITIALIZING TRAINING DATASET (mode={mode})")
@@ -626,6 +657,8 @@ class SmilesTrainer:
             tokenizer=tokenizer,
             max_input_length=config.max_input_length,
             max_output_length=config.max_output_length,
+            input_smiles_preprocessing=input_smiles_preprocessing,
+            output_smiles_preprocessing=output_smiles_preprocessing,
             max_atoms=max_atoms,
             regenerate_per_epoch=regenerate_per_epoch,
         )
@@ -645,7 +678,12 @@ class SmilesTrainer:
                 print("INITIALIZING VALIDATION DATASET")
                 print("=" * 60)
                 processed_val = generate_training_data(
-                    val_data, mode=mode, max_atoms=max_atoms, verbose=True
+                    val_data,
+                    mode=mode,
+                    input_smiles_preprocessing=input_smiles_preprocessing,
+                    output_smiles_preprocessing=output_smiles_preprocessing,
+                    max_atoms=max_atoms,
+                    verbose=True,
                 )
                 if processed_val:
                     self.val_dataset = StaticSmilesDataset(
@@ -678,8 +716,8 @@ class SmilesTrainer:
         )
         decoded_labels = self.tokenizer.batch_decode(labels, skip_special_tokens=True)
 
-        decoded_preds = [p.strip() for p in decoded_preds]
-        decoded_labels = [l.strip() for l in decoded_labels]
+        decoded_preds = [pred.strip() for pred in decoded_preds]
+        decoded_labels = [label.strip() for label in decoded_labels]
 
         if (
             self.trainer is not None
@@ -694,7 +732,9 @@ class SmilesTrainer:
                 for i, (pred, label) in enumerate(zip(decoded_preds, decoded_labels)):
                     f.write(f"{i}\t{pred}\t{label}\n")
 
-        exact_matches = [p == l for p, l in zip(decoded_preds, decoded_labels)]
+        exact_matches = [
+            pred == label for pred, label in zip(decoded_preds, decoded_labels)
+        ]
         exact_match = sum(exact_matches) / len(exact_matches) if exact_matches else 0.0
 
         correct_tokens = 0
@@ -704,7 +744,8 @@ class SmilesTrainer:
             label_tokens = label.split()
             min_len = min(len(pred_tokens), len(label_tokens))
             correct_tokens += sum(
-                p == l for p, l in zip(pred_tokens[:min_len], label_tokens[:min_len])
+                pred == label
+                for pred, label in zip(pred_tokens[:min_len], label_tokens[:min_len])
             )
             total_tokens += len(label_tokens)
         token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
@@ -947,7 +988,7 @@ class SmilesTrainer:
         for pred, label in zip(predictions, target_smiles):
             pt = pred.split()
             lt = label.split()
-            correct_tokens += sum(p == l for p, l in zip(pt, lt))
+            correct_tokens += sum(pred == label for pred, label in zip(pt, lt))
             total_tokens += len(lt)
         token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
 

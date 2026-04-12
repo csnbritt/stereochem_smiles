@@ -24,7 +24,7 @@ for deferred_val in [True, False]:
         identical_can_rand_count = 0
         failed_roundtrip_count = 0
         suffix_mismatch_count = 0
-        for i, smi in enumerate(smis[0:100000]):
+        for i, smi in enumerate(smis):
             ## Test that random/canonical and deferred/non-deferred roundtrips are consistent
             can_smi = Chem.MolToSmiles(Chem.MolFromSmiles(smi), canonical=True)
             crisp_smiles_can = CRISPSmilesConverter.encode(

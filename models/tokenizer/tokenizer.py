@@ -148,43 +148,6 @@ class CustomTokenizer(PreTrainedTokenizer):
             return [0] * len(token_ids_0)
         return [0] * (len(token_ids_0) + len(token_ids_1))
 
-    def preprocess_sentence_template(self, template_smarts: str) -> str:
-        REGEXPS_RXN = {
-            "2_ring_nums": re.compile(r"(%\d{2})"),
-            "rxn_symbol": re.compile(r"(>>)"),
-            "arrow_forward": re.compile(r"(->)"),
-            "arrow_backward": re.compile(r"(<-)"),
-            "brcl": re.compile(r"(Li|Na|Mg|Si|Ca|Cu|Ag|Pb|Br|Cl|>>)"),
-        }
-
-        REGEXP_ORDER_RXN = [
-            "2_ring_nums",
-            "arrow_forward",
-            "arrow_backward",
-            "brcl",
-            "rxn_symbol",
-        ]
-
-        def split_by(template_smarts, regexps):
-            if not regexps:
-                return list(template_smarts)
-            regexp = REGEXPS_RXN[regexps[0]]
-            splitted = regexp.split(template_smarts)
-            tokens = []
-            for i, split in enumerate(splitted):
-                if i % 2 == 0:
-                    tokens += split_by(split, regexps[1:])
-                else:
-                    tokens.append(split)
-            return tokens
-
-        tokens = split_by(template_smarts, REGEXP_ORDER_RXN)
-        string = ""
-        for ele in tokens:
-            string += ele + " "
-        string = "^ " + string + "$"
-        return string
-
     def preprocess_sentence_reaction_smiles(self, reaction_smiles: str) -> str:
         REGEXPS_RXN = {
             "brackets": re.compile(r"(\[[^\]]*\])"),

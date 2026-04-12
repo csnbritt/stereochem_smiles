@@ -45,6 +45,7 @@
 
 !scripts/
 !scripts/generate_manuscript_data.py
+!scripts/experiment_definitions.py
 
 !tests/
 !tests/unit/
