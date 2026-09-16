@@ -30,7 +30,6 @@ from models.training.trainer import (
     CustomSmallConfig,
     SmilesPreprocessing,
     SmilesTrainer,
-    compute_top_tokens,
     generate_training_data,
 )
 
@@ -263,17 +262,6 @@ def run_experiment(
             output_smiles_preprocessing=output_preprocessing,
         )
 
-    # Compute top tokens from a sample of training data for per-token accuracy tracking
-    sample_size = min(10000, len(train_data))
-    sample_pairs = generate_training_data(
-        train_data[:sample_size],
-        mode=mode,
-        input_smiles_preprocessing=input_preprocessing,
-        output_smiles_preprocessing=output_preprocessing,
-        verbose=False,
-    )
-    top_tokens = compute_top_tokens(sample_pairs, tokenizer, top_k=30)
-
     trainer = SmilesTrainer(
         config=config,
         tokenizer=tokenizer,
@@ -283,7 +271,6 @@ def run_experiment(
         test_data=processed_test,
         input_smiles_preprocessing=input_preprocessing,
         output_smiles_preprocessing=output_preprocessing,
-        top_tokens=top_tokens,
     )
 
     trainer.train()

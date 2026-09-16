@@ -52,6 +52,7 @@
 !scripts/generate_manuscript_data.py
 !scripts/experiment_definitions.py
 !scripts/analyze_stereochem_flips.py
+!scripts/plot_results.py
 
 !tests/
 !tests/unit/

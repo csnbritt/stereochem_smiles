@@ -1,5 +1,7 @@
+import json
+import os
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from transformers import (
     PreTrainedTokenizer,
@@ -93,7 +95,7 @@ class CustomTokenizer(PreTrainedTokenizer):
         Unknown tokens are replaced with unk_token.
         """
         if not isinstance(text, str):
-            raise ValueError("Input must be a string.")
+            raise TypeError("Input must be a string.")
 
         text = self.preprocess_sentence_reaction_smiles(text)
 
@@ -192,3 +194,36 @@ class CustomTokenizer(PreTrainedTokenizer):
         """Convenience method to decode a list of IDs back to a string."""
         tokens = [self._convert_id_to_token(i) for i in ids]
         return self.convert_tokens_to_string(tokens)
+
+    def save_vocabulary(
+        self, save_directory: str, filename_prefix: str | None = None
+    ) -> Tuple[str]:
+        """
+        Save the vocabulary (token -> id mapping) to a JSON file.
+
+        Required by PreTrainedTokenizerBase.save_pretrained, which calls this
+        method to write the vocab file alongside tokenizer_config.json.
+
+        Args:
+            save_directory (str): Directory in which to save the vocabulary.
+            filename_prefix (str | None): Optional prefix prepended to the
+                filename (used by save_pretrained for checkpoint subfolders).
+
+        Returns:
+            Tuple[str]: A single-element tuple with the path to the saved
+                vocabulary file.
+        """
+        os.makedirs(save_directory, exist_ok=True)
+
+        vocab_file = os.path.join(
+            save_directory,
+            (filename_prefix + "-" if filename_prefix else "") + "vocab.json",
+        )
+
+        sorted_vocab = dict(
+            sorted(self._token_to_id.items(), key=lambda kv: kv[1])
+        )
+        with open(vocab_file, "w", encoding="utf-8") as f:
+            json.dump(sorted_vocab, f, indent=2, ensure_ascii=False)
+
+        return (vocab_file,)

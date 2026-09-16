@@ -11,8 +11,8 @@ from models.training.trainer import CustomSmallConfig
 # Fixed-step training (no early stopping) for consistent accuracy-over-time curves.
 _ZINC_MAX_STEPS = 50000
 _USPTO_MAX_STEPS = 50000
-_EVAL_STEPS = 5000
-_SAVE_STEPS = 5000
+_EVAL_STEPS = 2000
+_SAVE_STEPS = 2000
 
 # ── ZINC translation experiments (6 conditions) ───────────────────────────────
 

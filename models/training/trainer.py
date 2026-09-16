@@ -1,5 +1,6 @@
 import logging
 import os
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, TypedDict
@@ -70,6 +71,26 @@ def strip_stereo_from_smiles(smiles: str) -> str | None:
     for bond in mol.GetBonds():
         bond.SetStereo(Chem.BondStereo.STEREONONE)
     return Chem.MolToSmiles(mol, canonical=True)
+
+
+def _is_stereo_token(token: str) -> bool:
+    """
+    Check if a token encodes stereochemistry.
+
+    Covers SMILES stereo tokens (@-containing atoms, / and \\ for E/Z)
+    and CRISP stereo tokens ([STEREO_*], [DB_STEREO_*]).
+
+    Args:
+        token (str): A single token from the tokenizer.
+
+    Returns:
+        bool: True if the token carries stereochemical information.
+    """
+    return (
+        "@" in token
+        or token in ("/", "\\")
+        or token.startswith(("[STEREO_", "[DB_STEREO_"))
+    )
 
 
 def _to_canonical_smiles(smiles: str, strip_stereo: bool = False) -> str | None:
@@ -597,14 +618,22 @@ class TrainingAnalysisCallback(TrainerCallback):
                 f.write(f"global_step\t{step}\n")
                 f.write(f"eval_loss\t{metrics['eval_loss']}\n")
 
-        # Log all evaluation metrics to a single file for easy parsing
-        exact_match = metrics.get("exact_match", "")
-        token_accuracy = metrics.get("token_accuracy", "")
-        non_stereo_exact_match = metrics.get("non_stereo_exact_match", "")
-        stereo_accuracy = metrics.get("stereo_accuracy", "")
+        # Log all evaluation metrics to a single file for easy parsing.
+        # HF Trainer prefixes eval metric keys with args.metric_key_prefix
+        # (default "eval"), so look up "eval_<name>" with a bare-name fallback.
+        prefix = getattr(args, "metric_key_prefix", "eval")
+
+        def _get(name: str):
+            return metrics.get(f"{prefix}_{name}", metrics.get(name, ""))
+
+        exact_match = _get("exact_match")
+        token_accuracy = _get("token_accuracy")
+        stereo_token_accuracy = _get("stereo_token_accuracy")
+        non_stereo_exact_match = _get("non_stereo_exact_match")
+        stereo_accuracy = _get("stereo_accuracy")
         self._append_line(
             self.eval_metrics_path,
-            f"{step}\t{exact_match}\t{token_accuracy}\t{non_stereo_exact_match}\t{stereo_accuracy}",
+            f"{step}\t{exact_match}\t{token_accuracy}\t{stereo_token_accuracy}\t{non_stereo_exact_match}\t{stereo_accuracy}",
         )
 
 
@@ -729,7 +758,6 @@ class SmilesTrainer:
         analysis_dir: str | None = None,
         input_smiles_preprocessing: SmilesPreprocessing | None = None,
         output_smiles_preprocessing: SmilesPreprocessing | None = None,
-        top_tokens: List[str] | None = None,
     ):
         """
         Initialize the trainer.
@@ -748,13 +776,11 @@ class SmilesTrainer:
             analysis_dir (str | None): Directory for analysis outputs.
             input_smiles_preprocessing (SmilesPreprocessing | None): Input preprocessing config.
             output_smiles_preprocessing (SmilesPreprocessing | None): Output preprocessing config.
-            top_tokens (List[str] | None): Tokens to track per-token accuracy for during evaluation.
         """
         self.config = config
         self.tokenizer = tokenizer
         self.mode = mode
         self.trainer = None
-        self.top_tokens = top_tokens
 
         self.analysis_dir = (
             analysis_dir
@@ -886,31 +912,36 @@ class SmilesTrainer:
             total_tokens += len(label_tokens)
         token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
 
-        # Per-token accuracy for tracked tokens
-        per_token_accuracy: dict[str, float] = {}
+        # Per-token accuracy for all tokens + stereo token accuracy
         token_correct: dict[str, int] = {}
         token_total: dict[str, int] = {}
-        if self.top_tokens:
-            token_correct = {t: 0 for t in self.top_tokens}
-            token_total = {t: 0 for t in self.top_tokens}
-            for pred, label in zip(decoded_preds, decoded_labels):
-                pred_tokens = pred.split()
-                label_tokens = label.split()
-                min_len = min(len(pred_tokens), len(label_tokens))
-                for j in range(min_len):
-                    lt = label_tokens[j]
-                    if lt in token_total:
-                        token_total[lt] += 1
-                        if pred_tokens[j] == lt:
-                            token_correct[lt] += 1
-                for j in range(min_len, len(label_tokens)):
-                    lt = label_tokens[j]
-                    if lt in token_total:
-                        token_total[lt] += 1
-            per_token_accuracy = {
-                t: (token_correct[t] / token_total[t] if token_total[t] > 0 else 0.0)
-                for t in self.top_tokens
-            }
+        stereo_correct = 0
+        stereo_total = 0
+        for pred, label in zip(decoded_preds, decoded_labels):
+            pred_tokens = pred.split()
+            label_tokens = label.split()
+            min_len = min(len(pred_tokens), len(label_tokens))
+            for j in range(min_len):
+                lt = label_tokens[j]
+                token_total[lt] = token_total.get(lt, 0) + 1
+                if pred_tokens[j] == lt:
+                    token_correct[lt] = token_correct.get(lt, 0) + 1
+                if _is_stereo_token(lt):
+                    stereo_total += 1
+                    if pred_tokens[j] == lt:
+                        stereo_correct += 1
+            for j in range(min_len, len(label_tokens)):
+                lt = label_tokens[j]
+                token_total[lt] = token_total.get(lt, 0) + 1
+                if _is_stereo_token(lt):
+                    stereo_total += 1
+        per_token_accuracy = {
+            t: (token_correct.get(t, 0) / token_total[t] if token_total[t] > 0 else 0.0)
+            for t in token_total
+        }
+        stereo_token_accuracy = (
+            stereo_correct / stereo_total if stereo_total > 0 else 0.0
+        )
 
         # Non-stereo exact match (connectivity only)
         # Uses _to_canonical_smiles which handles CRISP→SMILES decode + RDKit strip
@@ -946,15 +977,16 @@ class SmilesTrainer:
             else 0.0
         )
 
-        # Save per-token accuracy to files
-        if is_world_zero and self.top_tokens:
+        # Save per-token accuracy to files (all tokens, sorted by frequency)
+        if is_world_zero and token_total:
+            sorted_tokens = sorted(token_total, key=lambda t: -token_total[t])
             pta_path = os.path.join(
                 self.analysis_dir, f"per_token_accuracy_step_{step}.txt"
             )
             with open(pta_path, "w", encoding="utf-8") as f:
-                for token in self.top_tokens:
+                for token in sorted_tokens:
                     correct = token_correct.get(token, 0)
-                    total = token_total.get(token, 0)
+                    total = token_total[token]
                     acc = correct / total if total > 0 else 0.0
                     f.write(f"{token}\t{correct}\t{total}\t{acc:.6f}\n")
 
@@ -963,7 +995,7 @@ class SmilesTrainer:
             )
             with open(pta_summary_path, "a", encoding="utf-8") as f:
                 accs = [
-                    f"{per_token_accuracy.get(t, 0.0):.6f}" for t in self.top_tokens
+                    f"{per_token_accuracy.get(t, 0.0):.6f}" for t in sorted_tokens
                 ]
                 f.write(f"{step}\t" + "\t".join(accs) + "\n")
 
@@ -972,6 +1004,7 @@ class SmilesTrainer:
             f"  Exact match      : {exact_match:.4f}  ({sum(exact_matches)}/{len(exact_matches)})"
         )
         print(f"  Token acc        : {token_accuracy:.4f}")
+        print(f"  Stereo token acc : {stereo_token_accuracy:.4f}  ({stereo_correct}/{stereo_total})")
         print(f"  Non-stereo exact : {non_stereo_exact_match:.4f}")
         print(f"  Stereo accuracy  : {stereo_accuracy:.4f}")
         if decoded_preds:
@@ -982,6 +1015,7 @@ class SmilesTrainer:
         return {
             "exact_match": exact_match,
             "token_accuracy": token_accuracy,
+            "stereo_token_accuracy": stereo_token_accuracy,
             "non_stereo_exact_match": non_stereo_exact_match,
             "stereo_accuracy": stereo_accuracy,
         }
@@ -1043,6 +1077,16 @@ class SmilesTrainer:
                 )
             )
 
+        # transformers 4.46 renamed the `tokenizer` Trainer arg to
+        # `processing_class`; Seq2SeqTrainer internals still access the
+        # deprecated `self.tokenizer` property during eval, which emits a
+        # FutureWarning every eval step. Suppress that specific warning.
+        warnings.filterwarnings(
+            "ignore",
+            message=".*Trainer\\.tokenizer is now deprecated.*",
+            category=FutureWarning,
+        )
+
         self.trainer = Seq2SeqTrainer(
             model=self.model,
             args=training_args,
@@ -1050,6 +1094,7 @@ class SmilesTrainer:
             eval_dataset=self.val_dataset,
             compute_metrics=self.compute_metrics,
             callbacks=callbacks,
+            processing_class=self.tokenizer,
         )
 
         print("🚀 Starting training with SMILES augmentation per epoch...")
@@ -1214,12 +1259,27 @@ class SmilesTrainer:
 
         correct_tokens = 0
         total_tokens = 0
+        stereo_correct = 0
+        stereo_total = 0
         for pred, label in zip(predictions, target_smiles):
             pt = pred.split()
             lt = label.split()
-            correct_tokens += sum(pred == label for pred, label in zip(pt, lt))
+            min_len = min(len(pt), len(lt))
+            for j in range(min_len):
+                if pt[j] == lt[j]:
+                    correct_tokens += 1
+                if _is_stereo_token(lt[j]):
+                    stereo_total += 1
+                    if pt[j] == lt[j]:
+                        stereo_correct += 1
+            for j in range(min_len, len(lt)):
+                if _is_stereo_token(lt[j]):
+                    stereo_total += 1
             total_tokens += len(lt)
         token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
+        stereo_token_accuracy = (
+            stereo_correct / stereo_total if stereo_total > 0 else 0.0
+        )
 
         # Non-stereo exact match (connectivity only)
         # Uses _to_canonical_smiles which handles CRISP→SMILES decode + RDKit strip
@@ -1263,6 +1323,7 @@ class SmilesTrainer:
             f"  Exact match accuracy : {exact_match:.4f}  ({sum(exact_matches)}/{len(exact_matches)})"
         )
         print(f"  Token-level accuracy : {token_accuracy:.4f}")
+        print(f"  Stereo token acc     : {stereo_token_accuracy:.4f}  ({stereo_correct}/{stereo_total})")
         print(f"  Non-stereo exact     : {non_stereo_exact_match:.4f}")
         print(f"  Stereo accuracy      : {stereo_accuracy:.4f}")
         print(f"{'=' * 60}")
@@ -1287,6 +1348,7 @@ class SmilesTrainer:
         return {
             "exact_match": exact_match,
             "token_accuracy": token_accuracy,
+            "stereo_token_accuracy": stereo_token_accuracy,
             "non_stereo_exact_match": non_stereo_exact_match,
             "stereo_accuracy": stereo_accuracy,
             "predictions": predictions,
