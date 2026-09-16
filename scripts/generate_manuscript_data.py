@@ -30,6 +30,7 @@ from models.training.trainer import (
     CustomSmallConfig,
     SmilesPreprocessing,
     SmilesTrainer,
+    compute_top_tokens,
     generate_training_data,
 )
 
@@ -271,7 +272,7 @@ def run_experiment(
         output_smiles_preprocessing=output_preprocessing,
         verbose=False,
     )
-    top_tokens = compute_top_tokens(sample_pairs, tokenizer, top_k=30)  # noqa: F821
+    top_tokens = compute_top_tokens(sample_pairs, tokenizer, top_k=30)
 
     trainer = SmilesTrainer(
         config=config,
@@ -423,7 +424,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--uspto-dir",
         type=Path,
         default=Path("/data"),
-        help="Directory containing JIN_USPTO_1product_{train,val,test}.txt files.",
+        help="Directory containing Jin_USPTO_1product_{train,valid,test}.txt files.",
     )
     parser.add_argument(
         "--train-size",
@@ -454,9 +455,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  ZINC train: {len(zinc_train)}  |  val: {len(zinc_val)}")
 
     # ── Load USPTO data (pre-split reaction SMILES) ──────────────────────
-    uspto_train_path = args.uspto_dir / "JIN_USPTO_1product_train.txt"
-    uspto_val_path = args.uspto_dir / "JIN_USPTO_1product_val.txt"
-    uspto_test_path = args.uspto_dir / "JIN_USPTO_1product_test.txt"
+    uspto_train_path = args.uspto_dir / "Jin_USPTO_1product_train.txt"
+    uspto_val_path = args.uspto_dir / "Jin_USPTO_1product_valid.txt"
+    uspto_test_path = args.uspto_dir / "Jin_USPTO_1product_test.txt"
 
     print("Loading USPTO_STEREO dataset...")
     uspto_train = _read_lines(uspto_train_path)

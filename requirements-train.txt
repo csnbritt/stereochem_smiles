@@ -1,0 +1,10 @@
+# Training dependencies — pinned for reproducibility on Runpod.
+# torch is intentionally omitted: use the version preinstalled by the
+# Runpod PyTorch template (it is already CUDA-compatible).
+# Install with: pip install -r requirements-train.txt
+
+accelerate==1.1.0
+numpy==1.26.4
+transformers==4.46.3
+tensorboard==2.18.0
+rdkit==2024.9.5

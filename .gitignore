@@ -15,6 +15,7 @@
 !README.md
 !mkdocs.yml
 !requirements.txt
+!requirements-train.txt
 !pyproject.toml
 
 !crisp_smiles/

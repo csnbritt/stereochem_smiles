@@ -996,7 +996,6 @@ class SmilesTrainer:
             "learning_rate": self.config.learning_rate,
             "warmup_steps": self.config.warmup_steps,
             "weight_decay": self.config.weight_decay,
-            "logging_dir": self.config.logging_dir,
             "logging_steps": self.config.logging_steps,
             "save_steps": self.config.save_steps,
             "eval_steps": self.config.eval_steps if self.val_dataset else None,
