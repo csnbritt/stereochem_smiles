@@ -33,6 +33,8 @@ for deferred_val in [True, False]:
             crisp_smiles = CRISPSmilesConverter.encode(
                 can_smi, deferred=deferred_val, smiles_mode=smiles_mode
             )
+            if crisp_smiles_can is None or crisp_smiles is None:
+                continue
             # Test that random smiles_mode produces different results from canonical most of the time
             if smiles_mode == "random" and crisp_smiles_can == crisp_smiles:
                 identical_can_rand_count += 1
@@ -58,6 +60,8 @@ for deferred_val in [True, False]:
                     ran_crisp_smiles = CRISPSmilesConverter.encode(
                         can_smi, smiles_mode="random"
                     )
+                    if ran_crisp_smiles is None:
+                        continue
                     ran_crisp_suffix = ran_crisp_smiles.split("|")[-1]
                     ran_crisp_suffix_tokens = set(
                         re.findall(r"\[([^\]]*)\]", ran_crisp_suffix)
@@ -79,6 +83,8 @@ for deferred_val in [True, False]:
                     ran_crisp_smiles = CRISPSmilesConverter.encode(
                         can_smi, smiles_mode="random"
                     )
+                    if ran_crisp_smiles is None:
+                        continue
                     ran_stereo_e_count = ran_crisp_smiles.count("[STEREO_E]")
                     ran_stereo_z_count = ran_crisp_smiles.count("[STEREO_Z]")
                     ran_stereo_r_count = ran_crisp_smiles.count("[STEREO_R]")

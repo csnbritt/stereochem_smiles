@@ -35,19 +35,29 @@
 
 !examples/
 !examples/example_notebook.ipynb
+!examples/run_experiments.ipynb
 
 !models/
+!models/__init__.py
 !models/tokenizer/
+!models/tokenizer/__init__.py
 !models/tokenizer/tokenizer.py
 !models/tokenizer/vocab.py
 !models/training/
+!models/training/__init__.py
 !models/training/trainer.py
 
 !scripts/
 !scripts/generate_manuscript_data.py
 !scripts/experiment_definitions.py
+!scripts/analyze_stereochem_flips.py
 
 !tests/
 !tests/unit/
+!tests/unit/__init__.py
+!tests/unit/test_encode_decode.py
+!tests/unit/test_internal_methods.py
+!tests/unit/test_vocab.py
+!tests/unit/test_trainer.py
 !tests/integration/
 !tests/integration/test_roundtripability.py

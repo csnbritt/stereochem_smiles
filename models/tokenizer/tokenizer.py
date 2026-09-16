@@ -113,7 +113,8 @@ class CustomTokenizer(PreTrainedTokenizer):
         return self._token_to_id.get(token, self._token_to_id[self.unk_token])
 
     def _convert_id_to_token(self, index: int) -> str:
-        return self._id_to_token.get(index, self.unk_token)
+        result = self._id_to_token.get(index, self.unk_token)
+        return result if result is not None else (self.unk_token or "")
 
     def convert_tokens_to_string(self, tokens: List[str]) -> str:
         """

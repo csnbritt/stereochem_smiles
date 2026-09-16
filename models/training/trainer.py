@@ -1,10 +1,12 @@
+import logging
 import os
+from collections import Counter
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, TypedDict
 
 import numpy as np
 import torch
-from rdkit import Chem
+from rdkit import Chem, RDLogger
 from torch.utils.data import Dataset
 from transformers import (
     BartConfig,
@@ -19,6 +21,8 @@ from transformers import (
 
 from crisp_smiles.main import CRISPSmiles
 
+RDLogger.DisableLog("rdApp.*")  # type: ignore[attr-defined]
+
 CRISPSmilesConverter = CRISPSmiles()
 
 
@@ -26,6 +30,7 @@ class SmilesPreprocessing(TypedDict):
     input_smiles_syntax: str
     input_smiles_type: str
     crisp_input_deferred: bool
+    strip_stereo: bool
 
 
 def randomize_smiles(mol: Chem.Mol) -> Optional[str]:
@@ -44,21 +49,84 @@ def randomize_smiles(mol: Chem.Mol) -> Optional[str]:
         return None
 
 
+def strip_stereo_from_smiles(smiles: str) -> str | None:
+    """
+    Remove all stereochemistry from a SMILES string.
+
+    Clears tetrahedral chirality and double-bond stereo, then
+    re-canonicalizes the result.
+
+    Args:
+        smiles (str): A SMILES string potentially containing stereochemistry.
+
+    Returns:
+        str | None: Stereo-free canonical SMILES, or None if parsing fails.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    for atom in mol.GetAtoms():
+        atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+    for bond in mol.GetBonds():
+        bond.SetStereo(Chem.BondStereo.STEREONONE)
+    return Chem.MolToSmiles(mol, canonical=True)
+
+
+def _to_canonical_smiles(smiles: str, strip_stereo: bool = False) -> str | None:
+    """
+    Convert a SMILES or CRISP SMILES string to canonical SMILES.
+
+    If the input contains CRISP stereo tokens, it is first decoded to
+    standard SMILES via CRISPSmilesConverter.decode().  Then the result
+    is parsed with RDKit and re-canonicalized.
+
+    Args:
+        smiles (str): A SMILES or CRISP SMILES string.
+        strip_stereo (bool): If True, remove all stereochemistry before
+            canonicalizing.
+
+    Returns:
+        str | None: Canonical SMILES, or None if parsing fails.
+    """
+    # Decode CRISP SMILES to standard SMILES if stereo tokens are present
+    if "[STEREO_" in smiles or "[DB_STEREO_" in smiles or "|" in smiles:
+        try:
+            decoded = CRISPSmilesConverter.decode(smiles)
+            if decoded is not None:
+                smiles = decoded
+        except Exception as e:
+            logging.getLogger(__name__).debug(
+                "CRISP decode failed for '%s': %s", smiles, e
+            )
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    if strip_stereo:
+        for atom in mol.GetAtoms():
+            atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+        for bond in mol.GetBonds():
+            bond.SetStereo(Chem.BondStereo.STEREONONE)
+    return Chem.MolToSmiles(mol, canonical=True)
+
+
 def process_single_smiles(
-    smiles,
+    smiles: str,
     smiles_preprocessing: SmilesPreprocessing,
     max_atoms: int = 150,
 ) -> Optional[str]:
     """
-    Process a single molecule into an (input, output) SMILES pair.
+    Process a single SMILES string according to the preprocessing config.
 
     Args:
-        mol (Chem.Mol): RDKit molecule object.
-        mode (str): One of MODE_RANDOM_TO_CANONICAL or MODE_RANDOM_TO_RANDOM.
+        smiles (str): Input SMILES string.
+        smiles_preprocessing (SmilesPreprocessing): Preprocessing configuration
+            specifying syntax (smiles/crisp_smiles), type (canonical/random),
+            deferred mode, and whether to strip stereochemistry.
         max_atoms (int): Skip molecules with more atoms than this.
 
     Returns:
-        Optional[Tuple[str, str]]: (input_smiles, output_smiles) or None if skipped.
+        Optional[str]: Processed SMILES string, or None if skipped/invalid.
     """
     mol = Chem.MolFromSmiles(smiles)
     if mol is None or mol.GetNumAtoms() > max_atoms:
@@ -70,10 +138,21 @@ def process_single_smiles(
     input_smiles_syntax = smiles_preprocessing["input_smiles_syntax"]
     input_smiles_type = smiles_preprocessing["input_smiles_type"]
     crisp_input_deferred = smiles_preprocessing["crisp_input_deferred"]
+    strip_stereo = smiles_preprocessing.get("strip_stereo", False)
+
+    if strip_stereo:
+        for atom in mol.GetAtoms():
+            atom.SetChiralTag(Chem.ChiralType.CHI_UNSPECIFIED)
+        for bond in mol.GetBonds():
+            bond.SetStereo(Chem.BondStereo.STEREONONE)
+        smiles = Chem.MolToSmiles(mol, canonical=True)
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
 
     if input_smiles_syntax == "smiles":
         if input_smiles_type == "canonical":
-            inp = Chem.MolToSmiles(mol, canonical=True)
+            inp: str | None = Chem.MolToSmiles(mol, canonical=True)
         elif input_smiles_type == "random":
             randomized_smiles = randomize_smiles(mol)
             if randomized_smiles is None:
@@ -86,6 +165,8 @@ def process_single_smiles(
         inp = CRISPSmilesConverter.encode(
             smiles, deferred=crisp_input_deferred, smiles_mode=input_smiles_type
         )
+        if inp is None:
+            return None
     else:
         raise ValueError(f"Invalid input_smiles_syntax: {input_smiles_syntax}")
 
@@ -185,11 +266,14 @@ def generate_training_data(
     Generate training data pairs based on the preprocessing mode.
 
     Args:
-        data (List): Input data. For MODE_RANDOM_TO_CANONICAL and MODE_RANDOM_TO_RANDOM,
-            a list of RDKit Mol objects. For MODE_REACTION, a list of reaction SMILES
-            strings in "reactants>>products" format.
-        mode (str): Preprocessing mode. One of MODE_RANDOM_TO_CANONICAL,
-            MODE_RANDOM_TO_RANDOM, or MODE_REACTION.
+        data (List): Input data. For "translation", a list of SMILES strings.
+            For "reaction", a list of reaction SMILES strings in
+            "reactants>>products" format.
+        mode (str): Preprocessing mode. One of "translation" or "reaction".
+        input_smiles_preprocessing (SmilesPreprocessing | None): Input-side
+            preprocessing configuration.
+        output_smiles_preprocessing (SmilesPreprocessing | None): Output-side
+            preprocessing configuration.
         max_atoms (int): Maximum number of atoms allowed per molecule.
         verbose (bool): Print progress information.
 
@@ -235,6 +319,29 @@ def generate_training_data(
         )
 
     return all_data
+
+
+def compute_top_tokens(
+    data: List[Tuple[str, str]],
+    tokenizer: PreTrainedTokenizer,
+    top_k: int = 30,
+) -> List[str]:
+    """
+    Compute the top-k most frequent tokens from the output (target) side of training data.
+
+    Args:
+        data (List[Tuple[str, str]]): List of (input, output) pairs.
+        tokenizer (PreTrainedTokenizer): Tokenizer for splitting SMILES into tokens.
+        top_k (int): Number of top tokens to return.
+
+    Returns:
+        List[str]: The top-k most frequent tokens on the output side.
+    """
+    token_counts = Counter()
+    for _, output_smiles in data:
+        tokens = tokenizer.tokenize(output_smiles)
+        token_counts.update(tokens)
+    return [token for token, _ in token_counts.most_common(top_k)]
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -454,6 +561,7 @@ class TrainingAnalysisCallback(TrainerCallback):
 
         self.train_loss_path = os.path.join(self.save_dir, "train_loss_by_step.txt")
         self.eval_loss_path = os.path.join(self.save_dir, "eval_loss_by_step.txt")
+        self.eval_metrics_path = os.path.join(self.save_dir, "eval_metrics_by_step.txt")
 
     def _append_line(self, path: str, line: str) -> None:
         with open(path, "a", encoding="utf-8") as f:
@@ -479,15 +587,25 @@ class TrainingAnalysisCallback(TrainerCallback):
         if not metrics:
             return
 
+        step = state.global_step
+
         if "eval_loss" in metrics:
-            step = state.global_step
-            eval_loss = metrics["eval_loss"]
-            self._append_line(self.eval_loss_path, f"{step}\t{eval_loss}")
+            self._append_line(self.eval_loss_path, f"{step}\t{metrics['eval_loss']}")
 
             per_eval_path = os.path.join(self.save_dir, f"eval_loss_step_{step}.txt")
             with open(per_eval_path, "w", encoding="utf-8") as f:
                 f.write(f"global_step\t{step}\n")
-                f.write(f"eval_loss\t{eval_loss}\n")
+                f.write(f"eval_loss\t{metrics['eval_loss']}\n")
+
+        # Log all evaluation metrics to a single file for easy parsing
+        exact_match = metrics.get("exact_match", "")
+        token_accuracy = metrics.get("token_accuracy", "")
+        non_stereo_exact_match = metrics.get("non_stereo_exact_match", "")
+        stereo_accuracy = metrics.get("stereo_accuracy", "")
+        self._append_line(
+            self.eval_metrics_path,
+            f"{step}\t{exact_match}\t{token_accuracy}\t{non_stereo_exact_match}\t{stereo_accuracy}",
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -529,6 +647,8 @@ class CustomSmallConfig:
     logging_steps: int = 100
     early_stopping_patience: int = 10
     early_stopping_threshold: float = 0.0001
+    max_steps: int | None = None
+    use_early_stopping: bool = False
     output_dir: str = "/content/drive/MyDrive/custom_tiny_model"
     logging_dir: str = "/content/drive/MyDrive/logs"
     analysis_dir: str | None = None
@@ -609,6 +729,7 @@ class SmilesTrainer:
         analysis_dir: str | None = None,
         input_smiles_preprocessing: SmilesPreprocessing | None = None,
         output_smiles_preprocessing: SmilesPreprocessing | None = None,
+        top_tokens: List[str] | None = None,
     ):
         """
         Initialize the trainer.
@@ -627,11 +748,13 @@ class SmilesTrainer:
             analysis_dir (str | None): Directory for analysis outputs.
             input_smiles_preprocessing (SmilesPreprocessing | None): Input preprocessing config.
             output_smiles_preprocessing (SmilesPreprocessing | None): Output preprocessing config.
+            top_tokens (List[str] | None): Tokens to track per-token accuracy for during evaluation.
         """
         self.config = config
         self.tokenizer = tokenizer
         self.mode = mode
         self.trainer = None
+        self.top_tokens = top_tokens
 
         self.analysis_dir = (
             analysis_dir
@@ -706,7 +829,13 @@ class SmilesTrainer:
         self.model = CustomSmallModelBuilder.build_model(config, tokenizer)
 
     def compute_metrics(self, eval_pred):
-        """Compute evaluation metrics"""
+        """
+        Compute evaluation metrics including per-token accuracy and stereo-specific metrics.
+
+        Returns:
+            Dict[str, float]: Dictionary with exact_match, token_accuracy,
+                non_stereo_exact_match, and stereo_accuracy.
+        """
         predictions, labels = eval_pred
 
         labels = np.where(labels != -100, labels, self.tokenizer.pad_token_id)
@@ -719,24 +848,32 @@ class SmilesTrainer:
         decoded_preds = [pred.strip() for pred in decoded_preds]
         decoded_labels = [label.strip() for label in decoded_labels]
 
-        if (
+        is_world_zero = (
             self.trainer is not None
             and getattr(self, "analysis_dir", None) is not None
             and self.trainer.is_world_process_zero()
-        ):
-            step = self.trainer.state.global_step
+        )
+        step = self.trainer.state.global_step if self.trainer is not None else 0
+
+        if is_world_zero:
             gen_path = os.path.join(
                 self.analysis_dir, f"eval_generations_step_{step}.txt"
             )
             with open(gen_path, "w", encoding="utf-8") as f:
-                for i, (pred, label) in enumerate(zip(decoded_preds, decoded_labels)):
-                    f.write(f"{i}\t{pred}\t{label}\n")
+                f.writelines(
+                    f"{i}\t{pred}\t{label}\n"
+                    for i, (pred, label) in enumerate(
+                        zip(decoded_preds, decoded_labels)
+                    )
+                )
 
+        # Exact match
         exact_matches = [
             pred == label for pred, label in zip(decoded_preds, decoded_labels)
         ]
         exact_match = sum(exact_matches) / len(exact_matches) if exact_matches else 0.0
 
+        # Token accuracy (aggregate)
         correct_tokens = 0
         total_tokens = 0
         for pred, label in zip(decoded_preds, decoded_labels):
@@ -744,63 +881,154 @@ class SmilesTrainer:
             label_tokens = label.split()
             min_len = min(len(pred_tokens), len(label_tokens))
             correct_tokens += sum(
-                pred == label
-                for pred, label in zip(pred_tokens[:min_len], label_tokens[:min_len])
+                p == l for p, l in zip(pred_tokens[:min_len], label_tokens[:min_len])
             )
             total_tokens += len(label_tokens)
         token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
 
+        # Per-token accuracy for tracked tokens
+        per_token_accuracy: dict[str, float] = {}
+        token_correct: dict[str, int] = {}
+        token_total: dict[str, int] = {}
+        if self.top_tokens:
+            token_correct = {t: 0 for t in self.top_tokens}
+            token_total = {t: 0 for t in self.top_tokens}
+            for pred, label in zip(decoded_preds, decoded_labels):
+                pred_tokens = pred.split()
+                label_tokens = label.split()
+                min_len = min(len(pred_tokens), len(label_tokens))
+                for j in range(min_len):
+                    lt = label_tokens[j]
+                    if lt in token_total:
+                        token_total[lt] += 1
+                        if pred_tokens[j] == lt:
+                            token_correct[lt] += 1
+                for j in range(min_len, len(label_tokens)):
+                    lt = label_tokens[j]
+                    if lt in token_total:
+                        token_total[lt] += 1
+            per_token_accuracy = {
+                t: (token_correct[t] / token_total[t] if token_total[t] > 0 else 0.0)
+                for t in self.top_tokens
+            }
+
+        # Non-stereo exact match (connectivity only)
+        # Uses _to_canonical_smiles which handles CRISP→SMILES decode + RDKit strip
+        non_stereo_matches = []
+        for pred, label in zip(decoded_preds, decoded_labels):
+            pred_stripped = _to_canonical_smiles(pred, strip_stereo=True)
+            label_stripped = _to_canonical_smiles(label, strip_stereo=True)
+            if pred_stripped is not None and label_stripped is not None:
+                non_stereo_matches.append(pred_stripped == label_stripped)
+            else:
+                non_stereo_matches.append(False)
+        non_stereo_exact_match = (
+            sum(non_stereo_matches) / len(non_stereo_matches)
+            if non_stereo_matches
+            else 0.0
+        )
+
+        # Stereo accuracy: among predictions with correct connectivity,
+        # fraction that also have correct stereo (canonical SMILES match)
+        non_stereo_correct_count = sum(non_stereo_matches)
+        canonical_matches = []
+        for pred, label in zip(decoded_preds, decoded_labels):
+            pred_canon = _to_canonical_smiles(pred, strip_stereo=False)
+            label_canon = _to_canonical_smiles(label, strip_stereo=False)
+            if pred_canon is not None and label_canon is not None:
+                canonical_matches.append(pred_canon == label_canon)
+            else:
+                canonical_matches.append(False)
+        canonical_correct_count = sum(canonical_matches)
+        stereo_accuracy = (
+            canonical_correct_count / non_stereo_correct_count
+            if non_stereo_correct_count > 0
+            else 0.0
+        )
+
+        # Save per-token accuracy to files
+        if is_world_zero and self.top_tokens:
+            pta_path = os.path.join(
+                self.analysis_dir, f"per_token_accuracy_step_{step}.txt"
+            )
+            with open(pta_path, "w", encoding="utf-8") as f:
+                for token in self.top_tokens:
+                    correct = token_correct.get(token, 0)
+                    total = token_total.get(token, 0)
+                    acc = correct / total if total > 0 else 0.0
+                    f.write(f"{token}\t{correct}\t{total}\t{acc:.6f}\n")
+
+            pta_summary_path = os.path.join(
+                self.analysis_dir, "per_token_accuracy_by_step.txt"
+            )
+            with open(pta_summary_path, "a", encoding="utf-8") as f:
+                accs = [
+                    f"{per_token_accuracy.get(t, 0.0):.6f}" for t in self.top_tokens
+                ]
+                f.write(f"{step}\t" + "\t".join(accs) + "\n")
+
         print(f"\n{'=' * 60}")
         print(
-            f"  Exact match  : {exact_match:.4f}  ({sum(exact_matches)}/{len(exact_matches)})"
+            f"  Exact match      : {exact_match:.4f}  ({sum(exact_matches)}/{len(exact_matches)})"
         )
-        print(f"  Token acc    : {token_accuracy:.4f}")
+        print(f"  Token acc        : {token_accuracy:.4f}")
+        print(f"  Non-stereo exact : {non_stereo_exact_match:.4f}")
+        print(f"  Stereo accuracy  : {stereo_accuracy:.4f}")
         if decoded_preds:
-            print(f"  Example pred : {decoded_preds[0]}")
-            print(f"  Example label: {decoded_labels[0]}")
+            print(f"  Example pred     : {decoded_preds[0]}")
+            print(f"  Example label    : {decoded_labels[0]}")
         print(f"{'=' * 60}\n")
 
         return {
             "exact_match": exact_match,
             "token_accuracy": token_accuracy,
+            "non_stereo_exact_match": non_stereo_exact_match,
+            "stereo_accuracy": stereo_accuracy,
         }
 
     def train(self):
         """Train the model with data augmentation"""
 
-        training_args = Seq2SeqTrainingArguments(
-            output_dir=self.config.output_dir,
-            num_train_epochs=self.config.num_epochs,
-            per_device_train_batch_size=self.config.batch_size,
-            per_device_eval_batch_size=self.config.batch_size,
-            learning_rate=self.config.learning_rate,
-            warmup_steps=self.config.warmup_steps,
-            weight_decay=self.config.weight_decay,
-            logging_dir=self.config.logging_dir,
-            logging_steps=self.config.logging_steps,
-            save_steps=self.config.save_steps,
-            eval_steps=self.config.eval_steps if self.val_dataset else None,
-            eval_strategy="steps" if self.val_dataset else "no",
-            save_strategy="steps",
-            save_total_limit=self.config.save_total_limit,
-            load_best_model_at_end=True if self.val_dataset else False,
-            metric_for_best_model="exact_match",
-            greater_is_better=True,
-            fp16=self.config.fp16,
-            dataloader_num_workers=self.config.dataloader_num_workers,
-            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
-            max_grad_norm=self.config.max_grad_norm,
-            adam_beta1=self.config.adam_beta1,
-            adam_beta2=self.config.adam_beta2,
-            adam_epsilon=self.config.adam_epsilon,
-            lr_scheduler_type=self.config.lr_scheduler_type,
-            seed=self.config.seed,
-            report_to=["tensorboard"],
-            push_to_hub=False,
-            predict_with_generate=True,
-            generation_max_length=self.config.max_output_length,
-            generation_num_beams=self.config.num_beams,
-        )
+        training_args_kwargs: dict = {
+            "output_dir": self.config.output_dir,
+            "per_device_train_batch_size": self.config.batch_size,
+            "per_device_eval_batch_size": self.config.batch_size,
+            "learning_rate": self.config.learning_rate,
+            "warmup_steps": self.config.warmup_steps,
+            "weight_decay": self.config.weight_decay,
+            "logging_dir": self.config.logging_dir,
+            "logging_steps": self.config.logging_steps,
+            "save_steps": self.config.save_steps,
+            "eval_steps": self.config.eval_steps if self.val_dataset else None,
+            "eval_strategy": "steps" if self.val_dataset else "no",
+            "save_strategy": "steps",
+            "save_total_limit": self.config.save_total_limit,
+            "metric_for_best_model": "exact_match",
+            "greater_is_better": True,
+            "fp16": self.config.fp16,
+            "dataloader_num_workers": self.config.dataloader_num_workers,
+            "gradient_accumulation_steps": self.config.gradient_accumulation_steps,
+            "max_grad_norm": self.config.max_grad_norm,
+            "adam_beta1": self.config.adam_beta1,
+            "adam_beta2": self.config.adam_beta2,
+            "adam_epsilon": self.config.adam_epsilon,
+            "lr_scheduler_type": self.config.lr_scheduler_type,
+            "seed": self.config.seed,
+            "report_to": ["tensorboard"],
+            "push_to_hub": False,
+            "predict_with_generate": True,
+            "generation_max_length": self.config.max_output_length,
+            "generation_num_beams": self.config.num_beams,
+        }
+        if self.config.max_steps is not None:
+            training_args_kwargs["max_steps"] = self.config.max_steps
+        else:
+            training_args_kwargs["num_train_epochs"] = self.config.num_epochs
+        if self.config.use_early_stopping and self.val_dataset:
+            training_args_kwargs["load_best_model_at_end"] = True
+        else:
+            training_args_kwargs["load_best_model_at_end"] = False
+        training_args = Seq2SeqTrainingArguments(**training_args_kwargs)
 
         # Add data regeneration callback
         callbacks = [
@@ -808,7 +1036,7 @@ class SmilesTrainer:
             TrainingAnalysisCallback(self.analysis_dir),
         ]
 
-        if self.val_dataset:
+        if self.val_dataset and self.config.use_early_stopping:
             callbacks.append(
                 EarlyStoppingCallback(
                     early_stopping_patience=self.config.early_stopping_patience,
@@ -963,7 +1191,7 @@ class SmilesTrainer:
             for i, tgt in enumerate(target_smiles[:3]):
                 print(f"  Target {i}: '{tgt}'")
                 print(f"    Length: {len(tgt)}")
-                print(f"    Repr: {repr(tgt)}")
+                print(f"    Repr: {tgt!r}")
             print("=" * 60 + "\n")
 
         predictions = self.predict(
@@ -977,11 +1205,13 @@ class SmilesTrainer:
             for i, pred in enumerate(predictions[:3]):
                 print(f"  Prediction {i}: '{pred}'")
                 print(f"    Length: {len(pred)}")
-                print(f"    Repr: {repr(pred)}")
+                print(f"    Repr: {pred!r}")
             print("=" * 60 + "\n")
 
         exact_matches = [p == t for p, t in zip(predictions, target_smiles)]
-        exact_match = sum(exact_matches) / len(exact_matches)
+        exact_match = (
+            sum(exact_matches) / len(exact_matches) if exact_matches else 0.0
+        )
 
         correct_tokens = 0
         total_tokens = 0
@@ -992,6 +1222,40 @@ class SmilesTrainer:
             total_tokens += len(lt)
         token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
 
+        # Non-stereo exact match (connectivity only)
+        # Uses _to_canonical_smiles which handles CRISP→SMILES decode + RDKit strip
+        non_stereo_matches = []
+        for pred, target in zip(predictions, target_smiles):
+            pred_stripped = _to_canonical_smiles(pred, strip_stereo=True)
+            target_stripped = _to_canonical_smiles(target, strip_stereo=True)
+            if pred_stripped is not None and target_stripped is not None:
+                non_stereo_matches.append(pred_stripped == target_stripped)
+            else:
+                non_stereo_matches.append(False)
+        non_stereo_exact_match = (
+            sum(non_stereo_matches) / len(non_stereo_matches)
+            if non_stereo_matches
+            else 0.0
+        )
+
+        # Stereo accuracy: among predictions with correct connectivity,
+        # fraction that also have correct stereo (canonical SMILES match)
+        non_stereo_correct_count = sum(non_stereo_matches)
+        canonical_matches = []
+        for pred, target in zip(predictions, target_smiles):
+            pred_canon = _to_canonical_smiles(pred, strip_stereo=False)
+            target_canon = _to_canonical_smiles(target, strip_stereo=False)
+            if pred_canon is not None and target_canon is not None:
+                canonical_matches.append(pred_canon == target_canon)
+            else:
+                canonical_matches.append(False)
+        canonical_correct_count = sum(canonical_matches)
+        stereo_accuracy = (
+            canonical_correct_count / non_stereo_correct_count
+            if non_stereo_correct_count > 0
+            else 0.0
+        )
+
         print(f"\n{'=' * 60}")
         print("EVALUATION RESULTS:")
         print(f"{'=' * 60}")
@@ -1000,6 +1264,8 @@ class SmilesTrainer:
             f"  Exact match accuracy : {exact_match:.4f}  ({sum(exact_matches)}/{len(exact_matches)})"
         )
         print(f"  Token-level accuracy : {token_accuracy:.4f}")
+        print(f"  Non-stereo exact     : {non_stereo_exact_match:.4f}")
+        print(f"  Stereo accuracy      : {stereo_accuracy:.4f}")
         print(f"{'=' * 60}")
         print("\nSAMPLE PREDICTIONS (first 5):")
         print(f"{'=' * 60}")
@@ -1013,8 +1279,8 @@ class SmilesTrainer:
             print(f"  Target: '{tgt}'")
             if not ok and debug:
                 # Character-by-character comparison
-                print(f"  Pred repr  : {repr(pred)}")
-                print(f"  Target repr: {repr(tgt)}")
+                print(f"  Pred repr  : {pred!r}")
+                print(f"  Target repr: {tgt!r}")
                 print(f"  Pred tokens  : {pred.split()}")
                 print(f"  Target tokens: {tgt.split()}")
         print(f"\n{'=' * 60}\n")
@@ -1022,6 +1288,8 @@ class SmilesTrainer:
         return {
             "exact_match": exact_match,
             "token_accuracy": token_accuracy,
+            "non_stereo_exact_match": non_stereo_exact_match,
+            "stereo_accuracy": stereo_accuracy,
             "predictions": predictions,
             "exact_matches": exact_matches,
         }
