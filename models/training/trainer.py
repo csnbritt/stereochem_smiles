@@ -358,7 +358,7 @@ def compute_top_tokens(
     Returns:
         List[str]: The top-k most frequent tokens on the output side.
     """
-    token_counts = Counter()
+    token_counts: Counter[str] = Counter()
     for _, output_smiles in data:
         tokens = tokenizer.tokenize(output_smiles)
         token_counts.update(tokens)
@@ -907,7 +907,8 @@ class SmilesTrainer:
             label_tokens = label.split()
             min_len = min(len(pred_tokens), len(label_tokens))
             correct_tokens += sum(
-                p == l for p, l in zip(pred_tokens[:min_len], label_tokens[:min_len])
+                p == lbl
+                for p, lbl in zip(pred_tokens[:min_len], label_tokens[:min_len])
             )
             total_tokens += len(label_tokens)
         token_accuracy = correct_tokens / total_tokens if total_tokens > 0 else 0.0
@@ -994,9 +995,7 @@ class SmilesTrainer:
                 self.analysis_dir, "per_token_accuracy_by_step.txt"
             )
             with open(pta_summary_path, "a", encoding="utf-8") as f:
-                accs = [
-                    f"{per_token_accuracy.get(t, 0.0):.6f}" for t in sorted_tokens
-                ]
+                accs = [f"{per_token_accuracy.get(t, 0.0):.6f}" for t in sorted_tokens]
                 f.write(f"{step}\t" + "\t".join(accs) + "\n")
 
         print(f"\n{'=' * 60}")
@@ -1004,7 +1003,9 @@ class SmilesTrainer:
             f"  Exact match      : {exact_match:.4f}  ({sum(exact_matches)}/{len(exact_matches)})"
         )
         print(f"  Token acc        : {token_accuracy:.4f}")
-        print(f"  Stereo token acc : {stereo_token_accuracy:.4f}  ({stereo_correct}/{stereo_total})")
+        print(
+            f"  Stereo token acc : {stereo_token_accuracy:.4f}  ({stereo_correct}/{stereo_total})"
+        )
         print(f"  Non-stereo exact : {non_stereo_exact_match:.4f}")
         print(f"  Stereo accuracy  : {stereo_accuracy:.4f}")
         if decoded_preds:
@@ -1253,9 +1254,7 @@ class SmilesTrainer:
             print("=" * 60 + "\n")
 
         exact_matches = [p == t for p, t in zip(predictions, target_smiles)]
-        exact_match = (
-            sum(exact_matches) / len(exact_matches) if exact_matches else 0.0
-        )
+        exact_match = sum(exact_matches) / len(exact_matches) if exact_matches else 0.0
 
         correct_tokens = 0
         total_tokens = 0
@@ -1323,7 +1322,9 @@ class SmilesTrainer:
             f"  Exact match accuracy : {exact_match:.4f}  ({sum(exact_matches)}/{len(exact_matches)})"
         )
         print(f"  Token-level accuracy : {token_accuracy:.4f}")
-        print(f"  Stereo token acc     : {stereo_token_accuracy:.4f}  ({stereo_correct}/{stereo_total})")
+        print(
+            f"  Stereo token acc     : {stereo_token_accuracy:.4f}  ({stereo_correct}/{stereo_total})"
+        )
         print(f"  Non-stereo exact     : {non_stereo_exact_match:.4f}")
         print(f"  Stereo accuracy      : {stereo_accuracy:.4f}")
         print(f"{'=' * 60}")

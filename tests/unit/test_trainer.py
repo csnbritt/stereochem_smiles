@@ -9,6 +9,12 @@ Covers:
 """
 
 import pytest
+
+pytest.importorskip(
+    "transformers",
+    reason="trainer imports the transformers stack",
+)
+
 from rdkit import Chem
 
 from models.tokenizer.tokenizer import CustomTokenizer
@@ -16,7 +22,9 @@ from models.tokenizer.vocab import smiles_token_to_id_dict
 from models.training.trainer import (
     CustomSmallConfig,
     SmilesPreprocessing,
+    _to_canonical_smiles,
     compute_top_tokens,
+    process_single_smiles,
     strip_stereo_from_smiles,
 )
 

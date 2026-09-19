@@ -781,4 +781,3 @@ class CRISPSmiles:
         if remaining_parts:
             return graph_part + "|" + "|".join(remaining_parts)
         return graph_part
-

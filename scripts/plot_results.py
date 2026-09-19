@@ -21,25 +21,27 @@ import seaborn as sns
 
 # ── Publication style ────────────────────────────────────────────────────────
 
-plt.rcParams.update({
-    "font.family": "sans-serif",
-    "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-    "font.size": 9,
-    "axes.titlesize": 10,
-    "axes.labelsize": 9,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "legend.fontsize": 8,
-    "figure.dpi": 300,
-    "savefig.dpi": 300,
-    "savefig.bbox": "tight",
-    "savefig.pad_inches": 0.05,
-    "axes.linewidth": 0.8,
-    "xtick.major.width": 0.8,
-    "ytick.major.width": 0.8,
-    "lines.linewidth": 1.5,
-    "lines.markersize": 4,
-})
+plt.rcParams.update(
+    {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+        "font.size": 9,
+        "axes.titlesize": 10,
+        "axes.labelsize": 9,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "legend.fontsize": 8,
+        "figure.dpi": 300,
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.05,
+        "axes.linewidth": 0.8,
+        "xtick.major.width": 0.8,
+        "ytick.major.width": 0.8,
+        "lines.linewidth": 1.5,
+        "lines.markersize": 4,
+    }
+)
 
 # Colorblind-friendly palette
 PALETTE = sns.color_palette("colorblind", 8)
@@ -135,7 +137,9 @@ def _load_per_token_accuracy(analysis_dir: Path, step: int) -> Optional[pd.DataF
         return None
     try:
         df = pd.read_csv(
-            path, sep="\t", header=None,
+            path,
+            sep="\t",
+            header=None,
             names=["token", "correct", "total", "accuracy"],
         )
         return df
@@ -236,7 +240,8 @@ def plot_learning_curves(
                     agg["step"],
                     agg["mean"] - agg["std"],
                     agg["mean"] + agg["std"],
-                    alpha=0.15, color=color,
+                    alpha=0.15,
+                    color=color,
                 )
 
         # Stereo token accuracy
@@ -248,7 +253,8 @@ def plot_learning_curves(
                     agg["step"],
                     agg["mean"] - agg["std"],
                     agg["mean"] + agg["std"],
-                    alpha=0.15, color=color,
+                    alpha=0.15,
+                    color=color,
                 )
 
     axes[0].set_xlabel("Training Step")
@@ -287,8 +293,18 @@ def plot_final_performance(
     if not experiments:
         return
 
-    metrics_to_plot = ["exact_match", "stereo_token_accuracy", "non_stereo_exact_match", "stereo_accuracy"]
-    metric_labels = ["Exact Match", "Stereo Token Acc", "Non-Stereo Exact", "Stereo Accuracy"]
+    metrics_to_plot = [
+        "exact_match",
+        "stereo_token_accuracy",
+        "non_stereo_exact_match",
+        "stereo_accuracy",
+    ]
+    metric_labels = [
+        "Exact Match",
+        "Stereo Token Acc",
+        "Non-Stereo Exact",
+        "Stereo Accuracy",
+    ]
 
     # Collect final-step values per experiment per metric
     data = []
@@ -298,12 +314,14 @@ def plot_final_performance(
             agg = aggregate_metric(results, exp, metric)
             if agg is not None and len(agg) > 0:
                 final = agg.iloc[-1]
-                data.append({
-                    "experiment": label,
-                    "metric": mlabel,
-                    "mean": final["mean"],
-                    "std": final["std"] if not np.isnan(final["std"]) else 0.0,
-                })
+                data.append(
+                    {
+                        "experiment": label,
+                        "metric": mlabel,
+                        "mean": final["mean"],
+                        "std": final["std"] if not np.isnan(final["std"]) else 0.0,
+                    }
+                )
 
     if not data:
         return
@@ -316,18 +334,38 @@ def plot_final_performance(
 
     for i, (metric, mlabel) in enumerate(zip(metrics_to_plot, metric_labels)):
         subset = df[df["metric"] == mlabel]
-        means = [subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]["mean"].values[0]
-                 if len(subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]) > 0 else 0
-                 for e in experiments]
-        stds = [subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]["std"].values[0]
-                if len(subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]) > 0 else 0
-                for e in experiments]
-        ax.bar(x + i * width, means, width, yerr=stds, label=mlabel,
-               color=PALETTE[i], capsize=3, error_kw={"linewidth": 0.8})
+        means = [
+            subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]["mean"].values[
+                0
+            ]
+            if len(subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]) > 0
+            else 0
+            for e in experiments
+        ]
+        stds = [
+            subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]["std"].values[0]
+            if len(subset[subset["experiment"] == EXPERIMENT_LABELS.get(e, e)]) > 0
+            else 0
+            for e in experiments
+        ]
+        ax.bar(
+            x + i * width,
+            means,
+            width,
+            yerr=stds,
+            label=mlabel,
+            color=PALETTE[i],
+            capsize=3,
+            error_kw={"linewidth": 0.8},
+        )
 
     ax.set_xticks(x + width * 1.5)
-    ax.set_xticklabels([EXPERIMENT_LABELS.get(e, e) for e in experiments],
-                       rotation=30, ha="right", fontsize=7)
+    ax.set_xticklabels(
+        [EXPERIMENT_LABELS.get(e, e) for e in experiments],
+        rotation=30,
+        ha="right",
+        fontsize=7,
+    )
     ax.set_ylabel("Accuracy")
     ax.set_ylim(0, 1.1)
     ax.legend(fontsize=7, loc="upper right")
@@ -374,9 +412,12 @@ def plot_per_token_accuracy(
                     all_token_data[exp] = df
                 else:
                     # Average across seeds
-                    all_token_data[exp] = pd.concat([all_token_data[exp], df]).groupby("token").agg(
-                        {"correct": "sum", "total": "sum"}
-                    ).reset_index()
+                    all_token_data[exp] = (
+                        pd.concat([all_token_data[exp], df])
+                        .groupby("token")
+                        .agg({"correct": "sum", "total": "sum"})
+                        .reset_index()
+                    )
                     all_token_data[exp]["accuracy"] = (
                         all_token_data[exp]["correct"] / all_token_data[exp]["total"]
                     )
@@ -406,12 +447,14 @@ def plot_per_token_accuracy(
                 or token in ("/", "\\")
                 or token.startswith(("[STEREO_", "[DB_STEREO_"))
             )
-            plot_data.append({
-                "token": token,
-                "experiment": label,
-                "accuracy": acc,
-                "is_stereo": is_stereo,
-            })
+            plot_data.append(
+                {
+                    "token": token,
+                    "experiment": label,
+                    "accuracy": acc,
+                    "is_stereo": is_stereo,
+                }
+            )
 
     if not plot_data:
         return
@@ -425,9 +468,12 @@ def plot_per_token_accuracy(
     for i, exp in enumerate(experiments):
         label = EXPERIMENT_LABELS.get(exp, exp)
         subset = df_plot[df_plot["experiment"] == label]
-        accs = [subset[subset["token"] == t]["accuracy"].values[0]
-                if len(subset[subset["token"] == t]) > 0 else 0
-                for t in top_tokens]
+        accs = [
+            subset[subset["token"] == t]["accuracy"].values[0]
+            if len(subset[subset["token"] == t]) > 0
+            else 0
+            for t in top_tokens
+        ]
         ax.bar(x + i * width, accs, width, label=label, color=PALETTE[i])
 
     # Highlight stereo tokens on x-axis
@@ -485,12 +531,19 @@ def plot_loss_curves(
                 train_dfs.append(df)
         if train_dfs:
             combined = pd.concat(train_dfs)
-            agg = combined.groupby("step")["train_loss"].agg(["mean", "std"]).reset_index()
+            agg = (
+                combined.groupby("step")["train_loss"]
+                .agg(["mean", "std"])
+                .reset_index()
+            )
             axes[0].plot(agg["step"], agg["mean"], label=label, color=color)
             if len(train_dfs) > 1:
                 axes[0].fill_between(
-                    agg["step"], agg["mean"] - agg["std"], agg["mean"] + agg["std"],
-                    alpha=0.15, color=color,
+                    agg["step"],
+                    agg["mean"] - agg["std"],
+                    agg["mean"] + agg["std"],
+                    alpha=0.15,
+                    color=color,
                 )
 
         # Eval loss
@@ -501,12 +554,17 @@ def plot_loss_curves(
                 eval_dfs.append(df)
         if eval_dfs:
             combined = pd.concat(eval_dfs)
-            agg = combined.groupby("step")["eval_loss"].agg(["mean", "std"]).reset_index()
+            agg = (
+                combined.groupby("step")["eval_loss"].agg(["mean", "std"]).reset_index()
+            )
             axes[1].plot(agg["step"], agg["mean"], label=label, color=color)
             if len(eval_dfs) > 1:
                 axes[1].fill_between(
-                    agg["step"], agg["mean"] - agg["std"], agg["mean"] + agg["std"],
-                    alpha=0.15, color=color,
+                    agg["step"],
+                    agg["mean"] - agg["std"],
+                    agg["mean"] + agg["std"],
+                    alpha=0.15,
+                    color=color,
                 )
 
     axes[0].set_xlabel("Training Step")
@@ -557,9 +615,15 @@ def plot_stereo_scatter(
             ax.scatter(
                 final["non_stereo_exact_match"],
                 final["stereo_accuracy"],
-                color=color, marker=marker, s=40, alpha=0.8,
-                edgecolors="black", linewidths=0.5,
-                label=f"{label} ({dataset})" if seed == next(iter(results[exp].keys())) else "",
+                color=color,
+                marker=marker,
+                s=40,
+                alpha=0.8,
+                edgecolors="black",
+                linewidths=0.5,
+                label=f"{label} ({dataset})"
+                if seed == next(iter(results[exp].keys()))
+                else "",
             )
 
     # Diagonal reference line

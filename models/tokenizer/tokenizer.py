@@ -220,9 +220,7 @@ class CustomTokenizer(PreTrainedTokenizer):
             (filename_prefix + "-" if filename_prefix else "") + "vocab.json",
         )
 
-        sorted_vocab = dict(
-            sorted(self._token_to_id.items(), key=lambda kv: kv[1])
-        )
+        sorted_vocab = dict(sorted(self._token_to_id.items(), key=lambda kv: kv[1]))
         with open(vocab_file, "w", encoding="utf-8") as f:
             json.dump(sorted_vocab, f, indent=2, ensure_ascii=False)
 

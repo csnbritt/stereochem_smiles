@@ -1,4 +1,5 @@
 import argparse
+import random
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -120,6 +121,40 @@ def _read_lines(path: Path) -> list[str]:
     """
     with path.open("r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
+
+
+def _split_dataset(
+    lines: list[str],
+    train_size: int,
+    split_seed: int,
+) -> tuple[list[str], list[str]]:
+    """
+    Shuffle lines with a fixed seed and split into train/validation sets.
+
+    Args:
+        lines (list[str]): Dataset lines to split.
+        train_size (int): Number of lines assigned to the training split;
+            all remaining lines go to validation.
+        split_seed (int): Seed for the pre-split shuffle. Kept independent
+            of the model seeds so every seed and experiment sees an
+            identical split.
+
+    Returns:
+        tuple[list[str], list[str]]: (train_lines, val_lines).
+
+    Raises:
+        ValueError: If train_size is not within [1, len(lines) - 1], which
+            would leave one of the splits empty.
+    """
+    if not 0 < train_size < len(lines):
+        raise ValueError(
+            f"train_size ({train_size}) must be between 1 and "
+            f"{len(lines) - 1} so both train and val splits are non-empty "
+            f"(dataset has {len(lines)} lines)."
+        )
+    shuffled = list(lines)
+    random.Random(split_seed).shuffle(shuffled)
+    return shuffled[:train_size], shuffled[train_size:]
 
 
 def get_default_experiments() -> list[ExperimentSpec]:
@@ -408,16 +443,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Path to the ZINC 250K SMILES file.",
     )
     parser.add_argument(
-        "--uspto-dir",
+        "--uspto-reactions-path",
         type=Path,
-        default=Path("/data"),
-        help="Directory containing Jin_USPTO_1product_{train,valid,test}.txt files.",
+        default=Path("/data/USPTO_reaction_data.txt"),
+        help="Path to the USPTO reaction SMILES file "
+        "(one 'reactants>>products' per line).",
     )
     parser.add_argument(
-        "--train-size",
+        "--zinc-train-size",
         type=int,
         default=245000,
         help="Number of ZINC molecules to use for training (rest go to validation).",
+    )
+    parser.add_argument(
+        "--uspto-train-size",
+        type=int,
+        default=45000,
+        help="Number of USPTO reactions to use for training (rest go to validation).",
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help="Seed for shuffling datasets before the train/val split. "
+        "Independent of --seeds so all runs share an identical split.",
     )
     parser.add_argument(
         "--seeds",
@@ -434,26 +483,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     experiments = get_default_experiments()
 
-    # ── Load ZINC data (SMILES strings, split into train/val) ─────────────
+    # ── Load datasets (single file each, shuffled then split) ─────────
     print("Loading ZINC dataset...")
     zinc_smiles = _read_lines(args.zinc_smiles_path)
-    zinc_train = zinc_smiles[: args.train_size]
-    zinc_val = zinc_smiles[args.train_size :]
+    zinc_train, zinc_val = _split_dataset(
+        zinc_smiles, args.zinc_train_size, args.split_seed
+    )
     print(f"  ZINC train: {len(zinc_train)}  |  val: {len(zinc_val)}")
 
-    # ── Load USPTO data (pre-split reaction SMILES) ──────────────────────
-    uspto_train_path = args.uspto_dir / "Jin_USPTO_1product_train.txt"
-    uspto_val_path = args.uspto_dir / "Jin_USPTO_1product_valid.txt"
-    uspto_test_path = args.uspto_dir / "Jin_USPTO_1product_test.txt"
-
     print("Loading USPTO_STEREO dataset...")
-    uspto_train = _read_lines(uspto_train_path)
-    uspto_val = _read_lines(uspto_val_path)
-    uspto_test = _read_lines(uspto_test_path)
-    print(
-        f"  USPTO train: {len(uspto_train)}  |  val: {len(uspto_val)}"
-        f"  |  test: {len(uspto_test)}"
+    uspto_reactions = _read_lines(args.uspto_reactions_path)
+    missing_arrow = sum(">>" not in rxn for rxn in uspto_reactions)
+    if missing_arrow:
+        print(
+            f"  WARNING: {missing_arrow}/{len(uspto_reactions)} USPTO lines "
+            "lack '>>' and will be dropped during preprocessing."
+        )
+    uspto_train, uspto_val = _split_dataset(
+        uspto_reactions, args.uspto_train_size, args.split_seed
     )
+    print(f"  USPTO train: {len(uspto_train)}  |  val: {len(uspto_val)}")
+
+    datasets = {
+        "zinc": (zinc_train, zinc_val),
+        "USPTO_STEREO": (uspto_train, uspto_val),
+    }
 
     # ── Run experiments with multi-seed ─────────────────────────────────
     for i, exp in enumerate(experiments, 1):
@@ -461,20 +515,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"EXPERIMENT {i}/{len(experiments)}: {exp.dataset} / {exp.task}")
         print(f"{'=' * 80}\n")
 
-        if exp.dataset == "zinc":
-            all_results = run_experiment_multi_seed(
-                exp, zinc_train, zinc_val, seeds=args.seeds
-            )
-        elif exp.dataset == "USPTO_STEREO":
-            all_results = run_experiment_multi_seed(
-                exp,
-                uspto_train,
-                uspto_val,
-                test_data=uspto_test,
-                seeds=args.seeds,
-            )
-        else:
+        if exp.dataset not in datasets:
             raise ValueError(f"Unknown dataset '{exp.dataset}'")
+        train_data, val_data = datasets[exp.dataset]
+        all_results = run_experiment_multi_seed(
+            exp, train_data, val_data, seeds=args.seeds
+        )
 
         # Save aggregated results
         summary_path = Path(exp.config.output_dir) / "seed_summary.txt"

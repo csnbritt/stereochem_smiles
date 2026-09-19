@@ -11,8 +11,8 @@ from models.training.trainer import CustomSmallConfig
 # Fixed-step training (no early stopping) for consistent accuracy-over-time curves.
 _ZINC_MAX_STEPS = 50000
 _USPTO_MAX_STEPS = 50000
-_EVAL_STEPS = 2000
-_SAVE_STEPS = 2000
+_EVAL_STEPS = 5000
+_SAVE_STEPS = 5000
 
 # ── ZINC translation experiments (6 conditions) ───────────────────────────────
 
@@ -70,6 +70,26 @@ zinc_smiles_to_crisp_def = CustomSmallConfig(
     output_dir="results/zinc_smiles_to_crisp_def/",
     logging_dir="results/zinc_smiles_to_crisp_def/logs/",
     analysis_dir="results/zinc_smiles_to_crisp_def/analysis/",
+    max_steps=_ZINC_MAX_STEPS,
+    use_early_stopping=False,
+    eval_steps=_EVAL_STEPS,
+    save_steps=_SAVE_STEPS,
+)
+
+zinc_noncrisp_def_to_smiles = CustomSmallConfig(
+    output_dir="results/zinc_noncrisp_def_to_smiles/",
+    logging_dir="results/zinc_noncrisp_def_to_smiles/logs/",
+    analysis_dir="results/zinc_noncrisp_def_to_smiles/analysis/",
+    max_steps=_ZINC_MAX_STEPS,
+    use_early_stopping=False,
+    eval_steps=_EVAL_STEPS,
+    save_steps=_SAVE_STEPS,
+)
+
+zinc_smiles_to_noncrisp_def = CustomSmallConfig(
+    output_dir="results/zinc_smiles_to_noncrisp_def/",
+    logging_dir="results/zinc_smiles_to_noncrisp_def/logs/",
+    analysis_dir="results/zinc_smiles_to_noncrisp_def/analysis/",
     max_steps=_ZINC_MAX_STEPS,
     use_early_stopping=False,
     eval_steps=_EVAL_STEPS,

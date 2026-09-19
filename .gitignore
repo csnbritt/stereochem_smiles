@@ -61,5 +61,6 @@
 !tests/unit/test_internal_methods.py
 !tests/unit/test_vocab.py
 !tests/unit/test_trainer.py
+!tests/unit/test_split_dataset.py
 !tests/integration/
 !tests/integration/test_roundtripability.py
