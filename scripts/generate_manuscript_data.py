@@ -14,14 +14,18 @@ from experiment_definitions import (
     uspto_crisp_def_to_crisp_def,
     uspto_crisp_def_to_smiles,
     uspto_crisp_nondef_to_crisp_nondef,
+    uspto_crisp_nondef_to_smiles,
     uspto_smiles_no_stereo_to_smiles_no_stereo,
     uspto_smiles_to_crisp_def,
+    uspto_smiles_to_crisp_nondef,
     uspto_smiles_to_smiles,
     zinc_crisp_def_to_crisp_def,
     zinc_crisp_def_to_smiles,
     zinc_crisp_nondef_to_crisp_nondef,
+    zinc_crisp_nondef_to_smiles,
     zinc_smiles_no_stereo_to_smiles_no_stereo,
     zinc_smiles_to_crisp_def,
+    zinc_smiles_to_crisp_nondef,
     zinc_smiles_to_smiles,
 )
 
@@ -125,7 +129,7 @@ def _read_lines(path: Path) -> list[str]:
 
 def _split_dataset(
     lines: list[str],
-    train_size: int,
+    train_frac: float,
     split_seed: int,
 ) -> tuple[list[str], list[str]]:
     """
@@ -133,8 +137,8 @@ def _split_dataset(
 
     Args:
         lines (list[str]): Dataset lines to split.
-        train_size (int): Number of lines assigned to the training split;
-            all remaining lines go to validation.
+        train_frac (float): Fraction of lines assigned to the training
+            split; the remainder goes to validation.
         split_seed (int): Seed for the pre-split shuffle. Kept independent
             of the model seeds so every seed and experiment sees an
             identical split.
@@ -143,14 +147,16 @@ def _split_dataset(
         tuple[list[str], list[str]]: (train_lines, val_lines).
 
     Raises:
-        ValueError: If train_size is not within [1, len(lines) - 1], which
-            would leave one of the splits empty.
+        ValueError: If train_frac is not in the open interval (0, 1), or
+            if the resulting train or val split would be empty.
     """
+    if not 0.0 < train_frac < 1.0:
+        raise ValueError(f"train_frac ({train_frac}) must be in (0, 1).")
+    train_size = int(len(lines) * train_frac)
     if not 0 < train_size < len(lines):
         raise ValueError(
-            f"train_size ({train_size}) must be between 1 and "
-            f"{len(lines) - 1} so both train and val splits are non-empty "
-            f"(dataset has {len(lines)} lines)."
+            f"train_frac ({train_frac}) on {len(lines)} lines gives "
+            f"train_size={train_size}; both splits must be non-empty."
         )
     shuffled = list(lines)
     random.Random(split_seed).shuffle(shuffled)
@@ -165,7 +171,7 @@ def get_default_experiments() -> list[ExperimentSpec]:
         List[ExperimentSpec]: Experiment specs for all 12 manuscript experiments.
     """
     return [
-        # ── ZINC translation experiments (6 conditions) ───────────────────
+        # ── ZINC translation experiments (8 conditions) ───────────────────
         ExperimentSpec(
             dataset="zinc",
             task="smiles_to_smiles",
@@ -207,6 +213,20 @@ def get_default_experiments() -> list[ExperimentSpec]:
             config=zinc_smiles_to_crisp_def,
             input_preprocessing=RANDOM_SMILES,
             output_preprocessing=CANONICAL_CRISP_DEF,
+        ),
+        ExperimentSpec(
+            dataset="zinc",
+            task="crisp_nondef_to_smiles",
+            config=zinc_crisp_nondef_to_smiles,
+            input_preprocessing=RANDOM_CRISP_NONDEF,
+            output_preprocessing=CANONICAL_SMILES,
+        ),
+        ExperimentSpec(
+            dataset="zinc",
+            task="smiles_to_crisp_nondef",
+            config=zinc_smiles_to_crisp_nondef,
+            input_preprocessing=RANDOM_SMILES,
+            output_preprocessing=CANONICAL_CRISP_NONDEF,
         ),
         # ── USPTO forward reaction prediction experiments (6 conditions) ──
         ExperimentSpec(
@@ -250,6 +270,20 @@ def get_default_experiments() -> list[ExperimentSpec]:
             config=uspto_smiles_to_crisp_def,
             input_preprocessing=RANDOM_SMILES,
             output_preprocessing=CANONICAL_CRISP_DEF,
+        ),
+        ExperimentSpec(
+            dataset="USPTO_STEREO",
+            task="crisp_nondef_to_smiles",
+            config=uspto_crisp_nondef_to_smiles,
+            input_preprocessing=RANDOM_CRISP_NONDEF,
+            output_preprocessing=CANONICAL_SMILES,
+        ),
+        ExperimentSpec(
+            dataset="USPTO_STEREO",
+            task="smiles_to_crisp_nondef",
+            config=uspto_smiles_to_crisp_nondef,
+            input_preprocessing=RANDOM_SMILES,
+            output_preprocessing=CANONICAL_CRISP_NONDEF,
         ),
     ]
 
@@ -450,18 +484,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "(one 'reactants>>products' per line).",
     )
     parser.add_argument(
-        "--zinc-train-size",
-        type=int,
-        default=245000,
-        help="Number of ZINC molecules to use for training (rest go to validation).",
-    )
-    parser.add_argument(
-        "--uspto-train-size",
-        type=int,
-        default=45000,
-        help="Number of USPTO reactions to use for training (rest go to validation).",
-    )
-    parser.add_argument(
         "--split-seed",
         type=int,
         default=42,
@@ -483,13 +505,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     experiments = get_default_experiments()
 
-    # ── Load datasets (single file each, shuffled then split) ─────────
+    # ── Load raw datasets (single file each; split per experiment) ────
     print("Loading ZINC dataset...")
     zinc_smiles = _read_lines(args.zinc_smiles_path)
-    zinc_train, zinc_val = _split_dataset(
-        zinc_smiles, args.zinc_train_size, args.split_seed
-    )
-    print(f"  ZINC train: {len(zinc_train)}  |  val: {len(zinc_val)}")
+    print(f"  ZINC: {len(zinc_smiles)} molecules")
 
     print("Loading USPTO_STEREO dataset...")
     uspto_reactions = _read_lines(args.uspto_reactions_path)
@@ -499,14 +518,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"  WARNING: {missing_arrow}/{len(uspto_reactions)} USPTO lines "
             "lack '>>' and will be dropped during preprocessing."
         )
-    uspto_train, uspto_val = _split_dataset(
-        uspto_reactions, args.uspto_train_size, args.split_seed
-    )
-    print(f"  USPTO train: {len(uspto_train)}  |  val: {len(uspto_val)}")
+    print(f"  USPTO: {len(uspto_reactions)} reactions")
 
-    datasets = {
-        "zinc": (zinc_train, zinc_val),
-        "USPTO_STEREO": (uspto_train, uspto_val),
+    raw_datasets = {
+        "zinc": zinc_smiles,
+        "USPTO_STEREO": uspto_reactions,
     }
 
     # ── Run experiments with multi-seed ─────────────────────────────────
@@ -515,9 +531,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"EXPERIMENT {i}/{len(experiments)}: {exp.dataset} / {exp.task}")
         print(f"{'=' * 80}\n")
 
-        if exp.dataset not in datasets:
+        if exp.dataset not in raw_datasets:
             raise ValueError(f"Unknown dataset '{exp.dataset}'")
-        train_data, val_data = datasets[exp.dataset]
+        train_data, val_data = _split_dataset(
+            raw_datasets[exp.dataset], exp.config.train_frac, args.split_seed
+        )
+        print(
+            f"  Split (train_frac={exp.config.train_frac}): "
+            f"{len(train_data)} train  |  {len(val_data)} val"
+        )
         all_results = run_experiment_multi_seed(
             exp, train_data, val_data, seeds=args.seeds
         )

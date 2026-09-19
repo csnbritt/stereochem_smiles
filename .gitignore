@@ -62,5 +62,6 @@
 !tests/unit/test_vocab.py
 !tests/unit/test_trainer.py
 !tests/unit/test_split_dataset.py
+!tests/unit/test_teacher_forced_eval.py
 !tests/integration/
 !tests/integration/test_roundtripability.py

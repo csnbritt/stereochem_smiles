@@ -370,6 +370,53 @@ def compute_top_tokens(
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+def _argmax_logits_for_metrics(
+    logits: torch.Tensor | tuple, labels: torch.Tensor
+) -> torch.Tensor:
+    """
+    Reduce eval logits to per-position argmax token ids.
+
+    Used as ``preprocess_logits_for_metrics`` so the Trainer accumulates
+    argmax ids (~50 MB for 50k samples) instead of raw logits (~50 GB).
+
+    Args:
+        logits (torch.Tensor | tuple): Model outputs; if a tuple, the first
+            element is taken as the logits tensor of shape
+            (batch, seq_len, vocab).
+        labels (torch.Tensor): Gold label ids; unused, required by the
+            Trainer hook signature.
+
+    Returns:
+        torch.Tensor: Argmax token ids of shape (batch, seq_len).
+    """
+    if isinstance(logits, tuple):
+        logits = logits[0]
+    return logits.argmax(dim=-1)
+
+
+def _truncate_at_eos(ids: np.ndarray, eos_token_id: int) -> np.ndarray:
+    """
+    Truncate a token id sequence at the first EOS token (inclusive).
+
+    Teacher-forced argmax produces ids at every position, including after
+    the position where EOS is predicted. Greedy decoding would stop at
+    EOS, so trailing ids must be dropped before decoding to mirror
+    generation semantics.
+
+    Args:
+        ids (np.ndarray): 1-D array of token ids.
+        eos_token_id (int): EOS token id to truncate at.
+
+    Returns:
+        np.ndarray: ids up to and including the first EOS, or the
+            original array if EOS is absent.
+    """
+    eos_hits = np.flatnonzero(ids == eos_token_id)
+    if eos_hits.size:
+        return ids[: eos_hits[0] + 1]
+    return ids
+
+
 class DynamicSmilesDataset(Dataset):
     """
     Dataset that regenerates data each epoch for augmentation.
@@ -657,6 +704,7 @@ class CustomSmallConfig:
     max_input_length: int = 256
     max_output_length: int = 256
     batch_size: int = 64
+    eval_batch_size: int = 256
     learning_rate: float = 1e-3
     num_epochs: int = 20
     warmup_steps: int = 8000
@@ -684,6 +732,8 @@ class CustomSmallConfig:
     num_beams: int = 5
     length_penalty: float = 1.0
     early_stopping_generation: bool = True
+    train_frac: float = 0.95
+    teacher_forced_eval: bool = True
 
 
 class CustomSmallModelBuilder:
@@ -858,13 +908,26 @@ class SmilesTrainer:
         """
         Compute evaluation metrics including per-token accuracy and stereo-specific metrics.
 
+        When ``config.teacher_forced_eval`` is True, ``predictions`` are
+        per-position argmax ids (equivalent to greedy decoding); otherwise
+        they are generated ids from beam search.
+
         Returns:
             Dict[str, float]: Dictionary with exact_match, token_accuracy,
-                non_stereo_exact_match, and stereo_accuracy.
+                stereo_token_accuracy, non_stereo_exact_match, and
+                stereo_accuracy.
         """
         predictions, labels = eval_pred
 
         labels = np.where(labels != -100, labels, self.tokenizer.pad_token_id)
+
+        # Teacher-forced argmax emits ids past the predicted EOS; truncate
+        # at the first EOS so decoding mirrors greedy stopping. No-op for
+        # generated predictions, which already terminate at EOS.
+        predictions = [
+            _truncate_at_eos(np.asarray(row), self.tokenizer.eos_token_id)
+            for row in predictions
+        ]
 
         decoded_preds = self.tokenizer.batch_decode(
             predictions, skip_special_tokens=True
@@ -1027,7 +1090,7 @@ class SmilesTrainer:
         training_args_kwargs: dict = {
             "output_dir": self.config.output_dir,
             "per_device_train_batch_size": self.config.batch_size,
-            "per_device_eval_batch_size": self.config.batch_size,
+            "per_device_eval_batch_size": self.config.eval_batch_size,
             "learning_rate": self.config.learning_rate,
             "warmup_steps": self.config.warmup_steps,
             "weight_decay": self.config.weight_decay,
@@ -1050,10 +1113,17 @@ class SmilesTrainer:
             "seed": self.config.seed,
             "report_to": ["tensorboard"],
             "push_to_hub": False,
-            "predict_with_generate": True,
-            "generation_max_length": self.config.max_output_length,
-            "generation_num_beams": self.config.num_beams,
         }
+        if self.config.teacher_forced_eval:
+            # Single forward pass per eval batch; compute_metrics receives
+            # argmax ids (greedy-decoding equivalent) instead of generated ids.
+            training_args_kwargs["predict_with_generate"] = False
+        else:
+            training_args_kwargs["predict_with_generate"] = True
+            training_args_kwargs["generation_max_length"] = (
+                self.config.max_output_length
+            )
+            training_args_kwargs["generation_num_beams"] = self.config.num_beams
         if self.config.max_steps is not None:
             training_args_kwargs["max_steps"] = self.config.max_steps
         else:
@@ -1096,6 +1166,9 @@ class SmilesTrainer:
             compute_metrics=self.compute_metrics,
             callbacks=callbacks,
             processing_class=self.tokenizer,
+            preprocess_logits_for_metrics=(
+                _argmax_logits_for_metrics if self.config.teacher_forced_eval else None
+            ),
         )
 
         print("🚀 Starting training with SMILES augmentation per epoch...")

@@ -58,6 +58,7 @@ ignore = ["UP", "BLE001"]
 "scripts/analyze_stereochem_flips.py" = ["E402"]
 "tests/unit/test_split_dataset.py" = ["E402"]
 "tests/unit/test_trainer.py" = ["E402"]
+"tests/unit/test_teacher_forced_eval.py" = ["E402"]
 "examples/example_notebook.ipynb" = ["E402", "F401", "F811"]
 
 [dependency-groups]
